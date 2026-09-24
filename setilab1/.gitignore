@@ -1,0 +1,26 @@
+# CMake build output (регенерируется на любой машине через cmake --build)
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+compile_commands.json
+*.cmake
+
+# Скомпилированный бинарник этого проекта (файл, а не путь снаружи)
+/setilab1
+
+# Объектные файлы
+*.o
+*.obj
+*.out
+*.exe
+
+# Docker
+*.tar
+
+# ОС-мусор
+.DS_Store
+Thumbs.db
+desktop.ini
