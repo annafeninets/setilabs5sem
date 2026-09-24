@@ -5,21 +5,24 @@
 #include <netinet/in.h>
 #include <string>
 
-class MulticastSender
+namespace setilab1
 {
-public:
-    explicit MulticastSender(const MulticastAddress &group);
-    ~MulticastSender();
+    class MulticastSender
+    {
+    public:
+        explicit MulticastSender(const MulticastAddress &group);
+        ~MulticastSender();
 
-    MulticastSender(const MulticastSender &) = delete;
-    MulticastSender &operator=(const MulticastSender &) = delete;
+        MulticastSender(const MulticastSender &) = delete;
+        MulticastSender &operator=(const MulticastSender &) = delete;
 
-    void send(const std::string &message) const;
+        void send(const std::string &message) const;
 
-private:
-    int socketFd_;
-    sockaddr_storage dest_{};
-    socklen_t destLen_ = 0;
+    private:
+        int socketFd_;
+        sockaddr_storage dest_{};
+        socklen_t destLen_ = 0;
 
-    void buildDestAddress(const MulticastAddress &group);
-};
+        void buildDestAddress(const MulticastAddress &group);
+    };
+}

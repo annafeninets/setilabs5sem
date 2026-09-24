@@ -5,18 +5,21 @@
 #include "Multicast sender.h"
 #include "Peer tracker.h"
 
-class Application
+namespace setilab1
 {
-public:
-    explicit Application(const MulticastAddress &group);
+    class Application
+    {
+    public:
+        explicit Application(const MulticastAddress &group);
 
-    void run();
+        void run();
 
-private:
-    MulticastAddress group_;
-    MulticastSender sender_;
-    MulticastReceiver receiver_;
-    PeerTracker tracker_;
+    private:
+        MulticastAddress group_;
+        MulticastSender sender_;
+        MulticastReceiver receiver_;
+        PeerTracker tracker_;
 
-    bool listenForRound();
-};
+        bool listenForRound();
+    };
+}

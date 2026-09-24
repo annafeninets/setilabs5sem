@@ -14,8 +14,8 @@ int main(int argc, char *argv[])
 
     try
     {
-        MulticastAddress group(argv[1]);
-        Application app(group);
+        setilab1::MulticastAddress group(argv[1]);
+        setilab1::Application app(group);
         app.run();
     }
     catch (const std::exception &e)

@@ -1,56 +1,45 @@
-#include "Application.h"
-#include "Constants.h"
+#include "Multicast address.h"
 
-#include <chrono>
-#include <iostream>
+#include <arpa/inet.h>
+#include <stdexcept>
 
-namespace
+namespace setilab1
 {
-    long long elapsedMs(const std::chrono::steady_clock::time_point &start)
+    MulticastAddress::MulticastAddress(const std::string &text)
+        : text_(text), family_(detectFamily(text))
     {
-        auto now = std::chrono::steady_clock::now();
-        return std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
-    }
-}
+        if (family_ == -1)
+            throw std::runtime_error("Некорректный IP-адрес: " + text_);
 
-Application::Application(const MulticastAddress &group)
-    : group_(group), sender_(group), receiver_(group), tracker_(config::TTL_MS)
-{
-}
-
-bool Application::listenForRound()
-{
-    bool changed = false;
-    auto roundStart = std::chrono::steady_clock::now();
-
-    while (elapsedMs(roundStart) < config::HEARTBEAT_MS)
-    {
-        auto senderAddress = receiver_.receive(config::MESSAGE);
-        if (!senderAddress)
-            continue;
-
-        if (tracker_.touch(*senderAddress))
-            changed = true;
+        if (!isMulticast(text_, family_))
+            throw std::runtime_error("Адрес должен принадлежать multicast-диапазону: " + text_);
     }
 
-    return changed;
-}
-
-void Application::run()
-{
-    std::cout << "Слушаю multicast-группу " << group_.text()
-               << " (" << (group_.isIPv4() ? "IPv4" : "IPv6")
-               << "), порт " << config::PORT << "...\n";
-
-    while (true)
+    int MulticastAddress::detectFamily(const std::string &text)
     {
-        sender_.send(config::MESSAGE);
+        in_addr addr4{};
+        if (inet_pton(AF_INET, text.c_str(), &addr4) == 1)
+            return AF_INET;
 
-        bool changed = listenForRound();
-        if (tracker_.removeExpired())
-            changed = true;
+        in6_addr addr6{};
+        if (inet_pton(AF_INET6, text.c_str(), &addr6) == 1)
+            return AF_INET6;
 
-        if (changed)
-            tracker_.print();
+        return -1;
+    }
+
+    bool MulticastAddress::isMulticast(const std::string &text, int family)
+    {
+        if (family == AF_INET)
+        {
+            in_addr addr{};
+            inet_pton(AF_INET, text.c_str(), &addr);
+            uint32_t ipHostOrder = ntohl(addr.s_addr);
+            return ipHostOrder >= 0xE0000000u && ipHostOrder <= 0xEFFFFFFFu;
+        }
+
+        in6_addr addr6{};
+        inet_pton(AF_INET6, text.c_str(), &addr6);
+        return addr6.s6_addr[0] == 0xFF;
     }
 }
