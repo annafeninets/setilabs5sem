@@ -1,6 +1,7 @@
-#include "Multicast address.h"
+#include "multicast_address.h"
 
 #include <arpa/inet.h>
+#include <cstdint>
 #include <stdexcept>
 
 namespace setilab1
@@ -34,7 +35,7 @@ namespace setilab1
         {
             in_addr addr{};
             inet_pton(AF_INET, text.c_str(), &addr);
-            uint32_t ipHostOrder = ntohl(addr.s_addr);
+            std::uint32_t ipHostOrder = ntohl(addr.s_addr);
             return ipHostOrder >= 0xE0000000u && ipHostOrder <= 0xEFFFFFFFu;
         }
 

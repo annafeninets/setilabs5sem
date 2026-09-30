@@ -9,4 +9,7 @@ namespace config
     constexpr int TTL_MS = 2000;
     constexpr int RECV_TIMEOUT_US = 200000;
     constexpr const char *MESSAGE = "tosi bosi";
+    constexpr char HEARTBEAT_SEPARATOR = '|';
+
+    constexpr int MAX_DATAGRAM_SIZE = 256;
 }

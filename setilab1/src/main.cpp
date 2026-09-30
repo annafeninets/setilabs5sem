@@ -1,5 +1,5 @@
-#include "Application.h"
-#include "Multicast address.h"
+#include "application.h"
+#include "multicast_address.h"
 
 #include <exception>
 #include <iostream>
@@ -8,7 +8,7 @@ int main(int argc, char *argv[])
 {
     if (argc != 2)
     {
-        std::cerr << "Использование: ./lab1 <multicast-адрес>\n";
+        std::cerr << "Использование: " << argv[0] << " <multicast-адрес>\n";
         return 1;
     }
 
