@@ -3,13 +3,16 @@
 #include "../common/connection_error.hpp"
 #include "../common/logger.hpp"
 #include "../common/platform.hpp"
+#include "../common/protocol_limits.hpp"
 #include "../common/tcp_connection.hpp"
 #include "client_session.hpp"
 
+#include <chrono>
 #include <thread>
 
 namespace {
 constexpr int kMaxConcurrentClients = 10;
+constexpr std::chrono::milliseconds kAcceptRetryDelay{100};
 }
 
 Server::Server(uint16_t port, std::filesystem::path uploadsDir)
@@ -52,13 +55,20 @@ void Server::run() {
             listenSocket_.fd(), reinterpret_cast<sockaddr*>(&clientAddr), &clientAddrLen);
         if (clientSocket == kInvalidSocket) {
             Logger::log("accept() failed: ", lastSocketErrorMessage());
+            std::this_thread::sleep_for(kAcceptRetryDelay);
             continue;
         }
 
         if (activeClients_.load(std::memory_order_relaxed) >= kMaxConcurrentClients) {
             Logger::log("rejecting connection: concurrent client limit (",
                         kMaxConcurrentClients, ") reached");
-            closeNativeSocket(clientSocket);
+            TcpConnection rejected{Socket(clientSocket)};
+            try {
+                rejected.setTimeout(1);
+                rejected.sendString(kStatusFail);
+                rejected.shutdownSend();
+            } catch (const std::exception&) {
+            }
             continue;
         }
         activeClients_.fetch_add(1, std::memory_order_relaxed);

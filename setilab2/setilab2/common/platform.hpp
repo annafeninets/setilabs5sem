@@ -24,6 +24,7 @@
     inline constexpr native_socket_t kInvalidSocket = -1;
 #endif
 
+#include <cstddef>
 #include <string>
 
 void initializeSockets();
@@ -31,3 +32,11 @@ void cleanupSockets();
 void closeNativeSocket(native_socket_t s) noexcept;
 bool wasInterrupted() noexcept;
 std::string lastSocketErrorMessage();
+
+void setSocketTimeouts(native_socket_t s, int seconds);
+
+bool wasTimedOut() noexcept;
+
+void shutdownSend(native_socket_t s) noexcept;
+
+size_t maxFileNameBytesInDir(const std::string& dir);

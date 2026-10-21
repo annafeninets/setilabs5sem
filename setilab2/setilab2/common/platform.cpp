@@ -22,6 +22,21 @@ void closeNativeSocket(native_socket_t s) noexcept {
 
 bool wasInterrupted() noexcept { return false; }
 
+void setSocketTimeouts(native_socket_t s, int seconds) {
+    DWORD ms = static_cast<DWORD>(seconds) * 1000;
+    if (::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&ms), sizeof(ms)) != 0 ||
+        ::setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&ms), sizeof(ms)) != 0) {
+        throw std::runtime_error("setsockopt(SO_RCVTIMEO/SO_SNDTIMEO) failed: " +
+                                  lastSocketErrorMessage());
+    }
+}
+
+bool wasTimedOut() noexcept { return WSAGetLastError() == WSAETIMEDOUT; }
+
+void shutdownSend(native_socket_t s) noexcept { ::shutdown(s, SD_SEND); }
+
+size_t maxFileNameBytesInDir(const std::string&) { return 255; }
+
 std::string lastSocketErrorMessage() {
     int err = WSAGetLastError();
     char buffer[256] = {0};
@@ -48,6 +63,26 @@ void closeNativeSocket(native_socket_t s) noexcept {
 }
 
 bool wasInterrupted() noexcept { return errno == EINTR; }
+
+void setSocketTimeouts(native_socket_t s, int seconds) {
+    timeval tv{};
+    tv.tv_sec = seconds;
+    tv.tv_usec = 0;
+    if (::setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0 ||
+        ::setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) != 0) {
+        throw std::runtime_error("setsockopt(SO_RCVTIMEO/SO_SNDTIMEO) failed: " +
+                                  lastSocketErrorMessage());
+    }
+}
+
+bool wasTimedOut() noexcept { return errno == EAGAIN || errno == EWOULDBLOCK; }
+
+void shutdownSend(native_socket_t s) noexcept { ::shutdown(s, SHUT_WR); }
+
+size_t maxFileNameBytesInDir(const std::string& dir) {
+    long limit = ::pathconf(dir.c_str(), _PC_NAME_MAX);
+    return limit > 0 ? static_cast<size_t>(limit) : 255; // 255 — типичное значение, если ФС не сообщила
+}
 
 std::string lastSocketErrorMessage() { return std::strerror(errno); }
 

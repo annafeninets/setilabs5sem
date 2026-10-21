@@ -28,6 +28,9 @@ public:
 
     std::string describeRemote() const;
 
+    void setTimeout(int seconds);
+    void shutdownSend() { ::shutdownSend(socket_.fd()); }
+
     native_socket_t fd() const { return socket_.fd(); }
     void close() { socket_.close(); }
 

@@ -3,6 +3,7 @@
 #include "../common/connection_error.hpp"
 #include "../common/display_units.hpp"
 #include "../common/logger.hpp"
+#include "../common/platform.hpp"
 #include "../common/protocol_limits.hpp"
 #include "../common/utf8.hpp"
 #include "speed_tracker.hpp"
@@ -17,6 +18,16 @@ namespace {
 constexpr size_t kChunkSize = 1 << 16; // 64 KiB
 }
 
+static std::string shortenFileName(const std::string& name, size_t maxBytes) {
+    constexpr size_t kMaxKeptExtensionBytes = 32;
+    std::string ext = std::filesystem::path(name).extension().string();
+    if (ext.size() > kMaxKeptExtensionBytes || ext.size() >= maxBytes) {
+        ext.clear();
+    }
+    std::string stem = name.substr(0, name.size() - ext.size());
+    return truncateUtf8(stem, maxBytes - ext.size()) + ext;
+}
+
 ClientSession::ClientSession(TcpConnection connection, std::filesystem::path uploadsDir)
     : connection_(std::move(connection)), uploadsDir_(std::move(uploadsDir)) {}
 
@@ -25,6 +36,14 @@ std::filesystem::path ClientSession::resolveOutputPath(const std::string& client
     if (base.empty() || base == "." || base == "..") {
         base = "upload_" +
                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    }
+
+    const size_t maxNameBytes = maxFileNameBytesInDir(uploadsDir_.string());
+    if (base.size() > maxNameBytes) {
+        Logger::log("[", clientLabel_, "] file name is ", base.size(),
+                    " bytes, longer than the file system limit (", maxNameBytes,
+                    "); shortening it");
+        base = shortenFileName(base, maxNameBytes);
     }
 
     std::filesystem::path candidate = uploadsDir_ / base;
@@ -44,6 +63,9 @@ void ClientSession::receiveAndStoreFile() {
 
     if (!isValidUtf8(clientFileName)) {
         throw ConnectionError("client sent a file name that is not valid UTF-8");
+    }
+    if (clientFileName.find('\0') != std::string::npos) {
+        throw ConnectionError("client sent a file name containing a NUL byte");
     }
 
     totalBytes_ = connection_.recvUint64();
@@ -79,10 +101,9 @@ void ClientSession::receiveAndStoreFile() {
     }
     outFile.close();
     tracker.stop();
-
     bool ok = std::filesystem::exists(outputPath) &&
               std::filesystem::file_size(outputPath) == totalBytes_;
-    connection_.sendString(ok ? "SUCCESS" : "FAIL");
+    connection_.sendString(ok ? kStatusSuccess : kStatusFail);
     Logger::log("[", clientLabel_, "] ", (ok ? "SUCCESS" : "FAIL"));
 }
 
@@ -91,11 +112,17 @@ void ClientSession::run() {
     Logger::log("[", clientLabel_, "] connected");
 
     try {
+        connection_.setTimeout(kIoTimeoutSeconds);
+    } catch (const std::exception& e) {
+        Logger::log("[", clientLabel_, "] error: ", e.what());
+        return;
+    }
+
+    try {
         receiveAndStoreFile();
     } catch (const std::exception& e) {
         Logger::log("[", clientLabel_, "] error: ", e.what());
     }
 
     Logger::log("[", clientLabel_, "] disconnected");
-
 }

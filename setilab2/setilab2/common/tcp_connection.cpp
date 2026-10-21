@@ -5,10 +5,12 @@
 #include <climits>
 
 namespace {
-constexpr size_t kMaxSingleCall = 1 << 20;
+constexpr size_t kMaxSingleCall = 1 << 20; // 1 MiB
 }
 
 TcpConnection::TcpConnection(Socket socket) : socket_(std::move(socket)) {}
+
+void TcpConnection::setTimeout(int seconds) { setSocketTimeouts(socket_.fd(), seconds); }
 
 void TcpConnection::sendAll(const void* data, size_t len) {
     const char* ptr = static_cast<const char*>(data);
@@ -22,6 +24,7 @@ void TcpConnection::sendAll(const void* data, size_t len) {
 #endif
         if (n < 0) {
             if (wasInterrupted()) continue;
+            if (wasTimedOut()) throw ConnectionError("send() timed out: peer is not reading");
             throw ConnectionError("send() failed: " + lastSocketErrorMessage());
         }
         if (n == 0) {
@@ -37,6 +40,7 @@ size_t TcpConnection::recvSome(void* buffer, size_t maxLen) {
         int n = static_cast<int>(::recv(socket_.fd(), static_cast<char*>(buffer), chunk, 0));
         if (n < 0) {
             if (wasInterrupted()) continue;
+            if (wasTimedOut()) throw ConnectionError("recv() timed out: peer is not sending");
             throw ConnectionError("recv() failed: " + lastSocketErrorMessage());
         }
         return static_cast<size_t>(n);

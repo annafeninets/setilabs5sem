@@ -50,6 +50,7 @@ TcpConnection FileClient::connectToServer() const {
 }
 
 bool FileClient::sendFile(const std::filesystem::path& filePath) {
+
     std::ifstream file(filePath, std::ios::binary);
     if (!file) {
         throw std::runtime_error("cannot open file: " + filePath.string());
@@ -73,23 +74,36 @@ bool FileClient::sendFile(const std::filesystem::path& filePath) {
     TcpConnection conn = connectToServer();
     std::cout << "Connected to " << conn.describeRemote() << std::endl;
 
-    conn.sendString(fileName);
-    conn.sendUint64(fileSize);
+    conn.setTimeout(kIoTimeoutSeconds);
 
-    std::vector<char> buffer(kChunkSize);
-    uint64_t sent = 0;
-    while (sent < fileSize) {
-        std::streamsize toRead =
-            static_cast<std::streamsize>(std::min<uint64_t>(kChunkSize, fileSize - sent));
-        file.read(buffer.data(), toRead);
-        std::streamsize got = file.gcount();
-        if (got <= 0) {
-            throw std::runtime_error("unexpected EOF/error reading " + filePath.string());
+    try {
+        conn.sendString(fileName);
+        conn.sendUint64(fileSize);
+
+        std::vector<char> buffer(kChunkSize);
+        uint64_t sent = 0;
+        while (sent < fileSize) {
+            std::streamsize toRead =
+                static_cast<std::streamsize>(std::min<uint64_t>(kChunkSize, fileSize - sent));
+            file.read(buffer.data(), toRead);
+            std::streamsize got = file.gcount();
+            if (got <= 0) {
+                throw std::runtime_error("unexpected EOF/error reading " + filePath.string());
+            }
+            conn.sendAll(buffer.data(), static_cast<size_t>(got));
+            sent += static_cast<uint64_t>(got);
         }
-        conn.sendAll(buffer.data(), static_cast<size_t>(got));
-        sent += static_cast<uint64_t>(got);
+
+    } catch (const ConnectionError&) {
+        try {
+            if (conn.recvString(64) == kStatusFail) {
+                return false;
+            }
+        } catch (const ConnectionError&) {
+        }
+        throw;
     }
 
     const std::string result = conn.recvString(64);
-    return result == "SUCCESS";
+    return result == kStatusSuccess;
 }

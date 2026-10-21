@@ -100,3 +100,15 @@ bool isValidUtf8(const std::string& s) noexcept {
     }
     return true;
 }
+
+std::string truncateUtf8(const std::string& s, size_t maxBytes) {
+    if (s.size() <= maxBytes) {
+        return s;
+    }
+    size_t cut = maxBytes;
+    while (cut > 0 &&
+           (static_cast<unsigned char>(s[cut]) & kContinuationMask) == kContinuationPattern) {
+        --cut;
+    }
+    return s.substr(0, cut);
+}
