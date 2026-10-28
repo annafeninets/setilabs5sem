@@ -76,10 +76,19 @@ void Server::run() {
         TcpConnection connection{Socket(clientSocket)};
         std::filesystem::path uploadsDir = uploadsDir_;
 
-        std::thread([this, conn = std::move(connection), uploadsDir]() mutable {
-            ClientSession session(std::move(conn), uploadsDir);
-            session.run();
+        try {
+            std::thread([this, conn = std::move(connection), uploadsDir]() mutable {
+                try {
+                    ClientSession session(std::move(conn), uploadsDir);
+                    session.run();
+                } catch (...) {
+                }
+                activeClients_.fetch_sub(1, std::memory_order_relaxed);
+            }).detach();
+        } catch (const std::exception& e) {
             activeClients_.fetch_sub(1, std::memory_order_relaxed);
-        }).detach();
+            Logger::log("cannot start client thread: ", e.what());
+            std::this_thread::sleep_for(kAcceptRetryDelay);
+        }
     }
 }

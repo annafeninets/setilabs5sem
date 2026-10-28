@@ -12,10 +12,39 @@
 #include <chrono>
 #include <fstream>
 #include <iomanip>
+#include <mutex>
 #include <vector>
 
 namespace {
 constexpr size_t kChunkSize = 1 << 16; // 64 KiB
+
+std::mutex g_publishMutex;
+std::atomic<uint64_t> g_tempCounter{0};
+
+class TempFileGuard {
+public:
+    explicit TempFileGuard(std::filesystem::path path) : path_(std::move(path)) {}
+    ~TempFileGuard() {
+        if (!released_) {
+            std::error_code ec;
+            std::filesystem::remove(path_, ec);
+        }
+    }
+    void release() { released_ = true; }
+    TempFileGuard(const TempFileGuard&) = delete;
+    TempFileGuard& operator=(const TempFileGuard&) = delete;
+
+private:
+    std::filesystem::path path_;
+    bool released_ = false;
+};
+
+std::string withSuffix(const std::string& name, uint64_t n, size_t maxBytes) {
+    std::string ext = std::filesystem::path(name).extension().string();
+    std::string stem = name.substr(0, name.size() - ext.size());
+    std::string suffix = " (" + std::to_string(n) + ")";
+    return truncateUtf8(stem, maxBytes - ext.size() - suffix.size()) + suffix + ext;
+}
 }
 
 static std::string shortenFileName(const std::string& name, size_t maxBytes) {
@@ -56,6 +85,25 @@ std::filesystem::path ClientSession::resolveOutputPath(const std::string& client
     return candidate;
 }
 
+std::filesystem::path ClientSession::publishFile(const std::filesystem::path& tempPath,
+                                                 const std::filesystem::path& wantedPath) const {
+    const size_t maxNameBytes = maxFileNameBytesInDir(uploadsDir_.string());
+    const std::string wantedName = wantedPath.filename().string();
+    std::lock_guard<std::mutex> lock(g_publishMutex);
+    std::filesystem::path target = wantedPath;
+    for (uint64_t n = 1; std::filesystem::exists(target); ++n) {
+        target = uploadsDir_ / withSuffix(wantedName, n, maxNameBytes);
+    }
+    std::filesystem::rename(tempPath, target);
+    return target;
+}
+
+void ClientSession::sendStatus(bool ok) {
+    if (statusSent_) return;
+    statusSent_ = true;
+    connection_.sendString(ok ? kStatusSuccess : kStatusFail);
+}
+
 void ClientSession::receiveAndStoreFile() {
     std::filesystem::create_directories(uploadsDir_);
 
@@ -74,9 +122,14 @@ void ClientSession::receiveAndStoreFile() {
     }
 
     std::filesystem::path outputPath = resolveOutputPath(clientFileName);
-    std::ofstream outFile(outputPath, std::ios::binary | std::ios::trunc);
+    const std::filesystem::path tempPath =
+        uploadsDir_ / (".upload-" + std::to_string(g_tempCounter.fetch_add(1)) + "-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                       ".part");
+    TempFileGuard tempGuard(tempPath);
+    std::ofstream outFile(tempPath, std::ios::binary | std::ios::trunc);
     if (!outFile) {
-        throw std::runtime_error("cannot create output file: " + outputPath.string());
+        throw std::runtime_error("cannot create output file: " + tempPath.string());
     }
 
     double totalMB = static_cast<double>(totalBytes_) / kBytesPerMegabyte;
@@ -96,14 +149,26 @@ void ClientSession::receiveAndStoreFile() {
             throw ConnectionError("client disconnected before sending the full file");
         }
         outFile.write(buffer.data(), static_cast<std::streamsize>(n));
+        if (!outFile) {
+            throw std::runtime_error("write error: " + tempPath.string());
+        }
         receivedBytes_.fetch_add(n, std::memory_order_relaxed);
         remaining -= n;
     }
+    outFile.flush();
     outFile.close();
+    if (outFile.fail()) {
+        throw std::runtime_error("cannot flush/close file: " + tempPath.string());
+    }
     tracker.stop();
-    bool ok = std::filesystem::exists(outputPath) &&
-              std::filesystem::file_size(outputPath) == totalBytes_;
-    connection_.sendString(ok ? kStatusSuccess : kStatusFail);
+    bool ok = receivedBytes_.load() == totalBytes_ && std::filesystem::exists(tempPath) &&
+              std::filesystem::file_size(tempPath) == totalBytes_;
+    if (ok) {
+        std::filesystem::path saved = publishFile(tempPath, outputPath);
+        tempGuard.release();
+        Logger::log("[", clientLabel_, "] saved as ", saved.string());
+    }
+    sendStatus(ok);
     Logger::log("[", clientLabel_, "] ", (ok ? "SUCCESS" : "FAIL"));
 }
 
@@ -122,6 +187,12 @@ void ClientSession::run() {
         receiveAndStoreFile();
     } catch (const std::exception& e) {
         Logger::log("[", clientLabel_, "] error: ", e.what());
+        try {
+            connection_.setTimeout(1);
+            sendStatus(false);
+            connection_.shutdownSend();
+        } catch (const std::exception&) {
+        }
     }
 
     Logger::log("[", clientLabel_, "] disconnected");

@@ -16,6 +16,9 @@ private:
     std::filesystem::path resolveOutputPath(const std::string& clientFileName) const;
 
     void receiveAndStoreFile();
+    void sendStatus(bool ok);
+    std::filesystem::path publishFile(const std::filesystem::path& tempPath,
+                                      const std::filesystem::path& wantedPath) const;
 
     TcpConnection connection_;
     std::filesystem::path uploadsDir_;
@@ -23,4 +26,5 @@ private:
 
     std::atomic<uint64_t> receivedBytes_{0};
     uint64_t totalBytes_{0};
+    bool statusSent_{false};
 };

@@ -1,6 +1,7 @@
 #include "file_client.hpp"
 
 #include "../common/platform.hpp"
+#include "../common/port_parser.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -9,9 +10,9 @@
 
 namespace {
 
-void printUsage(const char* argv0) {
-    std::cerr << "Usage: " << argv0 << " <file-path> <server-host> <server-port>\n";
-}
+    void printUsage(const char* argv0) {
+        std::cerr << "Usage: " << argv0 << " <file-path> <server-host> <server-port>\n";
+    }
 
 }
 
@@ -24,21 +25,15 @@ int main(int argc, char** argv) {
     const std::string filePath = argv[1];
     const std::string host = argv[2];
 
-    int portArg;
-    try {
-        portArg = std::stoi(argv[3]);
-    } catch (const std::exception&) {
+    uint16_t port;
+    if (!parsePort(argv[3], port)) {
         std::cerr << "Invalid port: " << argv[3] << "\n";
-        return 1;
-    }
-    if (portArg <= 0 || portArg > 65535) {
-        std::cerr << "Port out of range: " << portArg << "\n";
         return 1;
     }
 
     try {
         initializeSockets();
-        FileClient client(host, static_cast<uint16_t>(portArg));
+        FileClient client(host, port);
         bool ok = client.sendFile(filePath);
 
         std::cout << (ok ? "SUCCESS" : "FAIL") << std::endl;
@@ -48,6 +43,7 @@ int main(int argc, char** argv) {
         return ok ? 0 : 1;
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;
+        std::cout << "FAIL" << std::endl;
         cleanupSockets();
         return 1;
     }

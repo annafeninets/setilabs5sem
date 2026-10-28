@@ -1,6 +1,7 @@
 #include "server.hpp"
 
 #include "../common/platform.hpp"
+#include "../common/port_parser.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -12,21 +13,15 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    int portArg;
-    try {
-        portArg = std::stoi(argv[1]);
-    } catch (const std::exception&) {
+    uint16_t port;
+    if (!parsePort(argv[1], port)) {
         std::cerr << "Invalid port: " << argv[1] << "\n";
-        return 1;
-    }
-    if (portArg <= 0 || portArg > 65535) {
-        std::cerr << "Port out of range: " << portArg << "\n";
         return 1;
     }
 
     try {
         initializeSockets();
-        Server server(static_cast<uint16_t>(portArg));
+        Server server(port);
         server.run();
     } catch (const std::exception& e) {
         std::cerr << "Fatal error: " << e.what() << std::endl;

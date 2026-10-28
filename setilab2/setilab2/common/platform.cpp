@@ -81,7 +81,7 @@ void shutdownSend(native_socket_t s) noexcept { ::shutdown(s, SHUT_WR); }
 
 size_t maxFileNameBytesInDir(const std::string& dir) {
     long limit = ::pathconf(dir.c_str(), _PC_NAME_MAX);
-    return limit > 0 ? static_cast<size_t>(limit) : 255; // 255 — типичное значение, если ФС не сообщила
+    return limit > 0 ? static_cast<size_t>(limit) : 255;
 }
 
 std::string lastSocketErrorMessage() { return std::strerror(errno); }
