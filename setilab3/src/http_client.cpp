@@ -2,18 +2,24 @@
 
 #include <curl/curl.h>
 
-#include "errors.hpp"
+#include <algorithm>
 #include <unordered_map>
 
-struct HttpClient::Request {
-    CURL* easy = nullptr;
-    std::string body;
-    std::string host;
-    char error[CURL_ERROR_SIZE] = {0};
-    async::Promise<HttpResponse> promise;
-};
+#include "errors.hpp"
 
 namespace {
+
+constexpr std::size_t kBytesPerMebibyte = 1024 * 1024;
+constexpr std::size_t kMaxResponseMebibytes = 5;
+constexpr std::size_t kMaxResponseBytes = kMaxResponseMebibytes * kBytesPerMebibyte;
+constexpr long kRequestTimeoutSeconds = 20;
+constexpr long kConnectTimeoutSeconds = 20;
+constexpr std::chrono::milliseconds kMaxPollWait{1000};
+
+struct ResponseBuffer {
+    std::string body;
+    bool tooLarge = false;
+};
 
 std::string hostOf(const std::string& url) {
     const std::string scheme = "://";
@@ -24,9 +30,14 @@ std::string hostOf(const std::string& url) {
 }
 
 size_t writeCallback(char* data, size_t size, size_t count, void* userdata) {
-    auto* body = static_cast<std::string*>(userdata);
-    body->append(data, size * count);
-    return size * count;
+    auto* buffer = static_cast<ResponseBuffer*>(userdata);
+    size_t chunk = size * count;
+    if (buffer->body.size() + chunk > kMaxResponseBytes) {
+        buffer->tooLarge = true;
+        return 0;
+    }
+    buffer->body.append(data, chunk);
+    return chunk;
 }
 
 struct CurlGlobal {
@@ -35,6 +46,15 @@ struct CurlGlobal {
 };
 
 }
+
+struct HttpClient::Request {
+    CURL* easy = nullptr;
+    ResponseBuffer buffer;
+    std::string host;
+    std::chrono::steady_clock::time_point notBefore;
+    char error[CURL_ERROR_SIZE] = {0};
+    async::Promise<HttpResponse> promise;
+};
 
 HttpClient::HttpClient() {
     static CurlGlobal global;
@@ -51,8 +71,13 @@ HttpClient::~HttpClient() {
 }
 
 async::Future<HttpResponse> HttpClient::get(const std::string& url) {
+    return getAfter(url, std::chrono::milliseconds(0));
+}
+
+async::Future<HttpResponse> HttpClient::getAfter(const std::string& url, std::chrono::milliseconds delay) {
     auto req = std::make_unique<Request>();
     req->host = hostOf(url);
+    req->notBefore = std::chrono::steady_clock::now() + delay;
     req->easy = curl_easy_init();
     if (!req->easy) {
         req->promise.setError(std::make_exception_ptr(NetworkError("curl_easy_init failed")));
@@ -60,10 +85,11 @@ async::Future<HttpResponse> HttpClient::get(const std::string& url) {
     }
     curl_easy_setopt(req->easy, CURLOPT_URL, url.c_str());
     curl_easy_setopt(req->easy, CURLOPT_WRITEFUNCTION, writeCallback);
-    curl_easy_setopt(req->easy, CURLOPT_WRITEDATA, &req->body);
+    curl_easy_setopt(req->easy, CURLOPT_WRITEDATA, &req->buffer);
     curl_easy_setopt(req->easy, CURLOPT_ERRORBUFFER, req->error);
-    curl_easy_setopt(req->easy, CURLOPT_TIMEOUT, 20L);
-    curl_easy_setopt(req->easy, CURLOPT_CONNECTTIMEOUT, 20L);
+    curl_easy_setopt(req->easy, CURLOPT_MAXFILESIZE_LARGE, static_cast<curl_off_t>(kMaxResponseBytes));
+    curl_easy_setopt(req->easy, CURLOPT_TIMEOUT, kRequestTimeoutSeconds);
+    curl_easy_setopt(req->easy, CURLOPT_CONNECTTIMEOUT, kConnectTimeoutSeconds);
     curl_easy_setopt(req->easy, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(req->easy, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(req->easy, CURLOPT_USERAGENT, "lab3-places-cpp/1.0");
@@ -81,6 +107,7 @@ async::Future<HttpResponse> HttpClient::get(const std::string& url) {
 void HttpClient::run() {
     CURLM* multi = static_cast<CURLM*>(multi_);
     std::unordered_map<CURL*, std::unique_ptr<Request>> active;
+    std::vector<std::unique_ptr<Request>> waiting;
 
     auto fail = [](std::unique_ptr<Request>& r, const char* message) {
         curl_easy_cleanup(r->easy);
@@ -88,14 +115,14 @@ void HttpClient::run() {
     };
 
     while (true) {
-        std::deque<std::unique_ptr<Request>> incoming;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            incoming.swap(pending_);
+            for (auto& r : pending_) waiting.push_back(std::move(r));
+            pending_.clear();
         }
 
         if (stop_) {
-            for (auto& r : incoming) fail(r, "HTTP client stopped");
+            for (auto& r : waiting) fail(r, "HTTP client stopped");
             for (auto& [easy, r] : active) {
                 curl_multi_remove_handle(multi, easy);
                 fail(r, "HTTP client stopped");
@@ -103,10 +130,18 @@ void HttpClient::run() {
             return;
         }
 
-        for (auto& r : incoming) {
-            CURL* easy = r->easy;
-            curl_multi_add_handle(multi, easy);
-            active.emplace(easy, std::move(r));
+        auto now = std::chrono::steady_clock::now();
+        auto nextWake = now + kMaxPollWait;
+        for (auto it = waiting.begin(); it != waiting.end();) {
+            if ((*it)->notBefore <= now) {
+                CURL* easy = (*it)->easy;
+                curl_multi_add_handle(multi, easy);
+                active.emplace(easy, std::move(*it));
+                it = waiting.erase(it);
+            } else {
+                nextWake = std::min(nextWake, (*it)->notBefore);
+                ++it;
+            }
         }
 
         int running = 0;
@@ -128,13 +163,16 @@ void HttpClient::run() {
             std::string message = req->error[0] ? req->error : curl_easy_strerror(code);
             curl_easy_cleanup(easy);
 
-            if (code == CURLE_OK) {
-                req->promise.setValue(HttpResponse(status, std::move(req->body)));
+            if (req->buffer.tooLarge || code == CURLE_FILESIZE_EXCEEDED) {
+                req->promise.setError(std::make_exception_ptr(ResponseTooLargeError(req->host, kMaxResponseBytes)));
+            } else if (code == CURLE_OK) {
+                req->promise.setValue(HttpResponse(status, std::move(req->buffer.body)));
             } else {
                 req->promise.setError(std::make_exception_ptr(NetworkError("network error (" + req->host + "): " + message)));
             }
         }
 
-        curl_multi_poll(multi, nullptr, 0, 1000, nullptr);
+        auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(nextWake - std::chrono::steady_clock::now());
+        curl_multi_poll(multi, nullptr, 0, static_cast<int>(std::max<long long>(0, wait.count())), nullptr);
     }
 }

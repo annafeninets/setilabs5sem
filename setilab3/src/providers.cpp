@@ -1,6 +1,7 @@
 #include "providers.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 #include "place_kinds.hpp"
 #include "url_builder.hpp"
@@ -11,7 +12,8 @@ using nlohmann::json;
 namespace {
 
 constexpr std::size_t kMaxPlaces = 5;
-constexpr std::size_t kMaxDescriptionChars = 300;
+constexpr double kMaxLatitude = 90.0;
+constexpr double kMaxLongitude = 180.0;
 
 std::string joinNonEmpty(const std::vector<std::string>& parts) {
     std::string out;
@@ -27,13 +29,25 @@ bool readCoordinate(const json& j, const char* key, double& out) {
     auto it = j.find(key);
     if (it == j.end()) return false;
     try {
-        if (it->is_number()) out = it->get<double>();
-        else if (it->is_string()) out = std::stod(it->get<std::string>());
-        else return false;
+        if (it->is_number()) {
+            out = it->get<double>();
+        } else if (it->is_string()) {
+            const std::string text = it->get<std::string>();
+            std::size_t parsed = 0;
+            out = std::stod(text, &parsed);
+            if (parsed != text.size()) return false;
+        } else {
+            return false;
+        }
     } catch (const std::exception&) {
         return false;
     }
     return true;
+}
+
+bool isValidCoordinate(double latitude, double longitude) {
+    return std::isfinite(latitude) && std::isfinite(longitude) && std::fabs(latitude) <= kMaxLatitude &&
+           std::fabs(longitude) <= kMaxLongitude;
 }
 
 int rateOf(const json& j) {
@@ -60,11 +74,15 @@ async::Future<std::vector<Location>> GraphHopperGeocoder::search(const std::stri
         std::vector<Location> result;
         for (const auto& hit : j.value("hits", json::array())) {
             if (!hit.contains("point") || !hit["point"].is_object()) continue;
+            double lat = 0, lon = 0;
+            if (!readCoordinate(hit["point"], "lat", lat) || !readCoordinate(hit["point"], "lng", lon) ||
+                !isValidCoordinate(lat, lon))
+                continue;
             std::string name = joinNonEmpty({stringField(hit, "name"),
                                              trim(stringField(hit, "street") + " " + stringField(hit, "housenumber")),
                                              stringField(hit, "city"), stringField(hit, "state"),
                                              stringField(hit, "country"), stringField(hit, "postcode")});
-            result.emplace_back(std::move(name), numberField(hit["point"], "lat"), numberField(hit["point"], "lng"),
+            result.emplace_back(std::move(name), lat, lon,
                                 describeOsmFeature(stringField(hit, "osm_key"), stringField(hit, "osm_value")));
         }
         return result;
@@ -83,7 +101,8 @@ async::Future<std::vector<Location>> NominatimGeocoder::search(const std::string
         if (!j.is_array()) return result;
         for (const auto& item : j) {
             double lat = 0, lon = 0;
-            if (!readCoordinate(item, "lat", lat) || !readCoordinate(item, "lon", lon)) continue;
+            if (!readCoordinate(item, "lat", lat) || !readCoordinate(item, "lon", lon) || !isValidCoordinate(lat, lon))
+                continue;
             std::string name = stringField(item, "display_name");
             if (name.empty()) name = stringField(item, "name");
             std::string category = stringField(item, "category");
@@ -95,7 +114,13 @@ async::Future<std::vector<Location>> NominatimGeocoder::search(const std::string
 }
 
 async::Future<std::vector<Location>> FallbackGeocoder::search(const std::string& query) {
-    return primary_.search(query).recoverWith([this, query](std::exception_ptr) { return fallback_.search(query); });
+    auto searchFallback = [this, query] { return fallback_.search(query); };
+    return primary_.search(query)
+        .then([searchFallback](std::vector<Location> found) -> async::Future<std::vector<Location>> {
+            if (!found.empty()) return async::makeReadyFuture(std::move(found));
+            return searchFallback().recover([](std::exception_ptr) { return std::vector<Location>(); });
+        })
+        .recoverWith([searchFallback](std::exception_ptr) { return searchFallback(); });
 }
 
 async::Future<Weather> OpenWeatherProvider::currentWeather(const Location& location) {
@@ -106,20 +131,19 @@ async::Future<Weather> OpenWeatherProvider::currentWeather(const Location& locat
                    .param("lang", "ru")
                    .param("appid", apiKey())
                    .build();
-    return getJson(url).then([](json j) {
+    return getJson(url).then([service = serviceName()](json j) {
         std::string description;
         if (j.contains("weather") && j["weather"].is_array() && !j["weather"].empty())
             description = stringField(j["weather"][0], "description");
-        double temp = 0, feels = 0, humidity = 0, pressure = 0, wind = 0;
-        if (j.contains("main") && j["main"].is_object()) {
-            temp = numberField(j["main"], "temp");
-            feels = numberField(j["main"], "feels_like");
-            humidity = numberField(j["main"], "humidity");
-            pressure = numberField(j["main"], "pressure");
-        }
-        if (j.contains("wind") && j["wind"].is_object()) wind = numberField(j["wind"], "speed");
+        const json& main = requireObject(service, j, "main");
+        const json& wind = requireObject(service, j, "wind");
+        double temp = requireNumber(service, main, "temp", "main.temp");
+        double feels = requireNumber(service, main, "feels_like", "main.feels_like");
+        double humidity = requireNumber(service, main, "humidity", "main.humidity");
+        double pressure = requireNumber(service, main, "pressure", "main.pressure");
+        double windSpeed = requireNumber(service, wind, "speed", "wind.speed");
         return Weather(stringField(j, "name"), description, temp, feels, static_cast<int>(humidity),
-                       static_cast<int>(pressure), wind);
+                       static_cast<int>(pressure), windSpeed);
     });
 }
 
@@ -164,6 +188,6 @@ async::Future<std::string> OpenTripMapCatalog::describe(const PlaceRef& place) {
         if (j.contains("wikipedia_extracts") && j["wikipedia_extracts"].is_object())
             text = stringField(j["wikipedia_extracts"], "text");
         if (text.empty() && j.contains("info") && j["info"].is_object()) text = stringField(j["info"], "descr");
-        return truncateUtf8(stripHtml(text), kMaxDescriptionChars);
+        return stripHtml(text);
     });
 }

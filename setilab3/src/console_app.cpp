@@ -1,5 +1,6 @@
 #include "console_app.hpp"
 
+#include <charconv>
 #include <chrono>
 #include <iomanip>
 #include <iostream>
@@ -34,16 +35,20 @@ bool ConsoleApp::handleQuery(const std::string& query) {
     }
     printLocations(locations);
 
-    bool closed = false;
-    auto choice = askChoice(locations.size(), closed);
-    if (closed) return false;
-    if (!choice) {
-        out_ << "Неверный номер.\n";
-        return true;
+    std::size_t selected = 0;
+    while (true) {
+        Choice choice = askChoice(locations.size());
+        if (choice.kind == Choice::Kind::Closed) return false;
+        if (choice.kind == Choice::Kind::Cancelled) return true;
+        if (choice.kind == Choice::Kind::Selected) {
+            selected = choice.index;
+            break;
+        }
+        out_ << "Неверный номер. Введите число от 1 до " << locations.size() << " или Enter для нового поиска.\n";
     }
 
     auto start = std::chrono::steady_clock::now();
-    Report report = service_.buildReport(locations[*choice]).get(kResultTimeout);
+    Report report = service_.buildReport(locations[selected]).get(kResultTimeout);
     double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 
     out_ << renderer_.render(report) << "\n(готово за " << std::fixed << std::setprecision(2) << seconds
@@ -60,17 +65,16 @@ void ConsoleApp::printLocations(const std::vector<Location>& locations) const {
     }
 }
 
-std::optional<std::size_t> ConsoleApp::askChoice(std::size_t count, bool& inputClosed) {
-    out_ << "Выберите номер локации: " << std::flush;
+ConsoleApp::Choice ConsoleApp::askChoice(std::size_t count) {
+    out_ << "Выберите номер локации (Enter - новый поиск): " << std::flush;
     std::string line;
-    if (!std::getline(in_, line)) {
-        inputClosed = true;
-        return std::nullopt;
-    }
-    try {
-        std::size_t n = std::stoul(line);
-        if (n >= 1 && n <= count) return n - 1;
-    } catch (const std::exception&) {
-    }
-    return std::nullopt;
+    if (!std::getline(in_, line)) return {Choice::Kind::Closed, 0};
+    line = trim(line);
+    if (line.empty()) return {Choice::Kind::Cancelled, 0};
+
+    std::size_t number = 0;
+    auto [end, error] = std::from_chars(line.data(), line.data() + line.size(), number);
+    if (error != std::errc() || end != line.data() + line.size() || number < 1 || number > count)
+        return {Choice::Kind::Invalid, 0};
+    return {Choice::Kind::Selected, number - 1};
 }

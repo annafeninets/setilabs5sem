@@ -31,6 +31,7 @@ template <class T> struct Unwrap<Future<T>> { using type = T; };
 
 template <class T>
 struct State {
+    static_assert(std::is_copy_constructible_v<T>, "Future<T> requires a copy-constructible T");
     std::mutex mutex;
     std::condition_variable cv;
     bool ready = false;
@@ -84,7 +85,7 @@ public:
         std::unique_lock<std::mutex> lock(state_->mutex);
         state_->cv.wait(lock, [this] { return state_->ready; });
         if (state_->error) std::rethrow_exception(state_->error);
-        return std::move(*state_->value);
+        return *state_->value;
     }
 
     template <class Rep, class Period>
@@ -92,14 +93,14 @@ public:
         std::unique_lock<std::mutex> lock(state_->mutex);
         if (!state_->cv.wait_for(lock, timeout, [this] { return state_->ready; })) throw TimeoutError();
         if (state_->error) std::rethrow_exception(state_->error);
-        return std::move(*state_->value);
+        return *state_->value;
     }
 
     template <class OnValue, class OnError>
     void subscribe(OnValue ok, OnError err) {
         onReady([st = state_, ok = std::move(ok), err = std::move(err)]() mutable {
             if (st->error) err(st->error);
-            else ok(std::move(*st->value));
+            else ok(static_cast<const T&>(*st->value));
         });
     }
 
@@ -109,15 +110,15 @@ public:
         using U = typename detail::Unwrap<R>::type;
         Promise<U> promise;
         subscribe(
-            [promise, f = std::move(f)](T&& value) mutable {
+            [promise, f = std::move(f)](const T& value) mutable {
                 try {
                     if constexpr (detail::IsFuture<R>::value) {
-                        R inner = f(std::move(value));
+                        R inner = f(value);
                         inner.subscribe(
-                            [promise](U&& u) { promise.setValue(std::move(u)); },
+                            [promise](const U& u) { promise.setValue(u); },
                             [promise](std::exception_ptr e) { promise.setError(std::move(e)); });
                     } else {
-                        promise.setValue(f(std::move(value)));
+                        promise.setValue(f(value));
                     }
                 } catch (...) {
                     promise.setError(std::current_exception());
@@ -131,7 +132,7 @@ public:
     Future<T> recover(F f) {
         Promise<T> promise;
         subscribe(
-            [promise](T&& value) { promise.setValue(std::move(value)); },
+            [promise](const T& value) { promise.setValue(value); },
             [promise, f = std::move(f)](std::exception_ptr e) mutable {
                 try {
                     promise.setValue(f(std::move(e)));
@@ -146,10 +147,10 @@ public:
     Future<T> recoverWith(F f) {
         Promise<T> promise;
         subscribe(
-            [promise](T&& value) { promise.setValue(std::move(value)); },
+            [promise](const T& value) { promise.setValue(value); },
             [promise, f = std::move(f)](std::exception_ptr e) mutable {
                 try {
-                    f(std::move(e)).subscribe([promise](T&& v) { promise.setValue(std::move(v)); },
+                    f(std::move(e)).subscribe([promise](const T& v) { promise.setValue(v); },
                                               [promise](std::exception_ptr e2) { promise.setError(std::move(e2)); });
                 } catch (...) {
                     promise.setError(std::current_exception());
@@ -236,7 +237,7 @@ Future<std::vector<T>> whenAll(std::vector<Future<T>> futures) {
 
     for (std::size_t i = 0; i < futures.size(); ++i) {
         futures[i].subscribe(
-            [finishOne, i](T&& v) { finishOne(i, std::optional<T>(std::move(v)), nullptr); },
+            [finishOne, i](const T& v) { finishOne(i, std::optional<T>(v), nullptr); },
             [finishOne, i](std::exception_ptr e) { finishOne(i, std::nullopt, std::move(e)); });
     }
     return promise.future();
@@ -269,22 +270,22 @@ Future<std::pair<A, B>> whenBoth(Future<A> a, Future<B> b) {
     };
 
     a.subscribe(
-        [shared, finish](A&& v) {
+        [shared, finish](const A& v) {
             bool last;
             {
                 std::lock_guard<std::mutex> lock(shared->mutex);
-                shared->first.emplace(std::move(v));
+                shared->first.emplace(v);
                 last = (--shared->remaining == 0);
             }
             if (last) finish();
         },
         onError);
     b.subscribe(
-        [shared, finish](B&& v) {
+        [shared, finish](const B& v) {
             bool last;
             {
                 std::lock_guard<std::mutex> lock(shared->mutex);
-                shared->second.emplace(std::move(v));
+                shared->second.emplace(v);
                 last = (--shared->remaining == 0);
             }
             if (last) finish();

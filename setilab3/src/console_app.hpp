@@ -1,7 +1,6 @@
 #pragma once
 
 #include <iosfwd>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,7 +17,13 @@ public:
 private:
     bool handleQuery(const std::string& query);
     void printLocations(const std::vector<Location>& locations) const;
-    std::optional<std::size_t> askChoice(std::size_t count, bool& inputClosed);
+    struct Choice {
+        enum class Kind { Selected, Invalid, Cancelled, Closed };
+        Kind kind = Kind::Invalid;
+        std::size_t index = 0;
+    };
+
+    Choice askChoice(std::size_t count);
 
     PlaceService& service_;
     const IReportRenderer& renderer_;

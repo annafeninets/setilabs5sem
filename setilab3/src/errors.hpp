@@ -32,3 +32,9 @@ public:
 private:
     long status_;
 };
+
+class ResponseTooLargeError : public AppError {
+public:
+    ResponseTooLargeError(const std::string& host, std::size_t limitBytes)
+        : AppError("response from " + host + " is larger than " + std::to_string(limitBytes) + " bytes") {}
+};

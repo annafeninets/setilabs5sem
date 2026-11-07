@@ -4,6 +4,11 @@
 #include <sstream>
 
 #include "place_kinds.hpp"
+#include "util.hpp"
+
+namespace {
+    constexpr std::size_t kMaxDescriptionChars = 300;
+}
 
 std::string TextReportRenderer::render(const Report& report) const {
     std::ostringstream out;
@@ -34,7 +39,7 @@ std::string TextReportRenderer::render(const Report& report) const {
             out << "  " << i++ << ". " << p.name() << " (" << (type.empty() ? "" : type + ", ") << std::setprecision(0)
                 << p.distance() << " м)\n" << std::setprecision(1) << "     ";
             switch (p.descriptionStatus()) {
-                case Place::DescriptionStatus::Loaded: out << p.description(); break;
+                case Place::DescriptionStatus::Loaded: out << truncateUtf8(p.description(), kMaxDescriptionChars); break;
                 case Place::DescriptionStatus::Missing: out << "(описания нет)"; break;
                 case Place::DescriptionStatus::Failed: out << "(описание не удалось загрузить)"; break;
             }

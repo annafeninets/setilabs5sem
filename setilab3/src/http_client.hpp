@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -20,6 +21,7 @@ public:
     HttpClient& operator=(const HttpClient&) = delete;
 
     async::Future<HttpResponse> get(const std::string& url) override;
+    async::Future<HttpResponse> getAfter(const std::string& url, std::chrono::milliseconds delay) override;
 
 private:
     struct Request;

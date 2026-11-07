@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,6 +23,7 @@ class IHttpClient {
 public:
     virtual ~IHttpClient() = default;
     virtual async::Future<HttpResponse> get(const std::string& url) = 0;
+    virtual async::Future<HttpResponse> getAfter(const std::string& url, std::chrono::milliseconds delay) = 0;
 };
 
 class IGeocoder {
