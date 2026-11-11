@@ -109,9 +109,18 @@ void HttpClient::run() {
     std::unordered_map<CURL*, std::unique_ptr<Request>> active;
     std::vector<std::unique_ptr<Request>> waiting;
 
-    auto fail = [](std::unique_ptr<Request>& r, const char* message) {
+    auto fail = [](std::unique_ptr<Request>& r, const std::string& message) {
         curl_easy_cleanup(r->easy);
         r->promise.setError(std::make_exception_ptr(NetworkError(message)));
+    };
+
+    auto failAllActive = [&](const std::string& message) {
+        auto doomed = std::move(active);
+        active.clear();
+        for (auto& [easy, r] : doomed) {
+            curl_multi_remove_handle(multi, easy);
+            fail(r, "network error (" + r->host + "): " + message);
+        }
     };
 
     while (true) {
@@ -135,17 +144,22 @@ void HttpClient::run() {
         for (auto it = waiting.begin(); it != waiting.end();) {
             if ((*it)->notBefore <= now) {
                 CURL* easy = (*it)->easy;
-                curl_multi_add_handle(multi, easy);
-                active.emplace(easy, std::move(*it));
+                CURLMcode added = curl_multi_add_handle(multi, easy);
+                if (added == CURLM_OK) {
+                    active.emplace(easy, std::move(*it));
+                } else {
+                    fail(*it, "network error (" + (*it)->host + "): " + curl_multi_strerror(added));
+                }
                 it = waiting.erase(it);
             } else {
-                nextWake = std::min(nextWake, (*it)->notBefore);
+                nextWake = min(nextWake, (*it)->notBefore);
                 ++it;
             }
         }
 
         int running = 0;
-        curl_multi_perform(multi, &running);
+        CURLMcode performed = curl_multi_perform(multi, &running);
+        if (performed != CURLM_OK) failAllActive(curl_multi_strerror(performed));
 
         int left = 0;
         while (CURLMsg* msg = curl_multi_info_read(multi, &left)) {
@@ -173,6 +187,8 @@ void HttpClient::run() {
         }
 
         auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(nextWake - std::chrono::steady_clock::now());
-        curl_multi_poll(multi, nullptr, 0, static_cast<int>(std::max<long long>(0, wait.count())), nullptr);
+        CURLMcode polled =
+            curl_multi_poll(multi, nullptr, 0, static_cast<int>(std::max<long long>(0, wait.count())), nullptr);
+        if (polled != CURLM_OK) failAllActive(curl_multi_strerror(polled));
     }
 }
