@@ -4,7 +4,6 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 
-#include <cctype>
 #include <cerrno>
 #include <cstdarg>
 #include <cstdio>
@@ -187,7 +186,6 @@ void Session::parseHandshake() {
         port_ = r.port;
         if (r.isDomain) {
             host_ = r.host;
-            for (char& ch : host_) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
             target_ = host_ + ":" + std::to_string(port_);
             startResolve();
         } else {
@@ -210,6 +208,7 @@ void Session::startResolve() {
 }
 
 void Session::onResolved(std::vector<in_addr> addrs) {
+    if (closed_) return;
     dnsPending_ = false;
     if (addrs.empty()) return fail(socks5::kRepHostUnreachable, "cannot resolve " + host_);
     addrs_ = std::move(addrs);

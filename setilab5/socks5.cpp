@@ -5,6 +5,10 @@
 
 namespace socks5 {
 
+namespace {
+constexpr uint8_t kMinDomainLen = 1;
+}
+
 Greeting parseGreeting(const uint8_t* p, size_t size) {
     Greeting g;
     if (size < kGreetingMinSize) return g;
@@ -41,6 +45,10 @@ Request parseRequest(const uint8_t* p, size_t size) {
             break;
         case kAtypDomain:
             if (size < kDomainLenOffset + kDomainLenSize) return r;
+            if (p[kDomainLenOffset] < kMinDomainLen) {
+                r.status = Status::Malformed;
+                return r;
+            }
             need = kRequestFixedPrefix + kDomainLenSize + p[kDomainLenOffset] + kPortSize;
             break;
         default:

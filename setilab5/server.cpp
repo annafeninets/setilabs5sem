@@ -10,6 +10,9 @@
 #include <system_error>
 
 namespace {
+constexpr auto kAcceptRetryDelay = std::chrono::seconds(1);
+constexpr int kTimerSlackMs = 1;
+
 [[noreturn]] void fail(const char* what) {
     throw std::system_error(errno, std::generic_category(), what);
 }
@@ -34,7 +37,12 @@ Server::Server(uint16_t port)
 
 void Server::run() {
     for (;;) {
+        if (acceptPaused_ && Clock::now() >= acceptResumeAt_) resumeAccept();
         int timeout = dns_.processTimeouts();
+        if (acceptPaused_) {
+            int wait = msUntilAcceptResume();
+            if (timeout < 0 || wait < timeout) timeout = wait;
+        }
         epoll_.poll(timeout);
         graveyard_.clear();
     }
@@ -47,10 +55,7 @@ void Server::onEvent(uint32_t) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) return;
             if (errno == EINTR || errno == ECONNABORTED) continue;
             std::fprintf(stderr, "ERROR: accept: %s\n", std::strerror(errno));
-            if (!sessions_.empty()) {
-                listenWatch_.set(listenFd_.get(), 0);
-                acceptPaused_ = true;
-            }
+            pauseAccept();
             return;
         }
         auto session = std::make_unique<Session>(FileDescriptor(fd), epoll_, dns_,
@@ -66,8 +71,21 @@ void Server::release(Session* session) {
     if (it == sessions_.end()) return;
     graveyard_.push_back(std::move(it->second));
     sessions_.erase(it);
-    if (acceptPaused_) {
-        acceptPaused_ = false;
-        listenWatch_.set(listenFd_.get(), EPOLLIN);
-    }
+    if (acceptPaused_) resumeAccept();
+}
+
+void Server::pauseAccept() {
+    listenWatch_.set(listenFd_.get(), 0);
+    acceptPaused_ = true;
+    acceptResumeAt_ = Clock::now() + kAcceptRetryDelay;
+}
+
+void Server::resumeAccept() {
+    acceptPaused_ = false;
+    listenWatch_.set(listenFd_.get(), EPOLLIN);
+}
+
+int Server::msUntilAcceptResume() const {
+    auto left = std::chrono::duration_cast<std::chrono::milliseconds>(acceptResumeAt_ - Clock::now()).count();
+    return static_cast<int>(left < 0 ? 0 : left) + kTimerSlackMs;
 }

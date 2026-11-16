@@ -8,7 +8,6 @@ add_executable(socks5_proxy main.cpp server.cpp session.cpp resolver.cpp epoll.c
         dns.hpp
         epoll.hpp
         fd.hpp
-        session.hpp
         socks5.hpp
         session.hpp
         buffer.hpp

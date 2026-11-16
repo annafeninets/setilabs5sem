@@ -3,9 +3,11 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
+#include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
-#include <cstdlib>
+#include <random>
 #include <system_error>
 
 #include "dns.hpp"
@@ -17,13 +19,14 @@ constexpr size_t kMaxAddrs = 8;
 constexpr size_t kRecvBufSize = 4096;
 constexpr int kMaxRecvPerEvent = 64;
 constexpr int kRcodeNxDomain = 3;
+constexpr int kTimerSlackMs = 1;
 }
 
 DnsResolver::DnsResolver(Epoll& epoll)
     : fd_(socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)),
       watch_(epoll, *this),
       server_(dns::systemResolver()),
-      nextId_(static_cast<Id>(std::rand())) {
+      nextId_(static_cast<Id>(std::random_device{}())) {
     if (!fd_.valid()) throw std::system_error(errno, std::generic_category(), "socket(udp)");
     watch_.set(fd_.get(), EPOLLIN);
 
@@ -34,19 +37,22 @@ DnsResolver::DnsResolver(Epoll& epoll)
 
 bool DnsResolver::resolve(const std::string& host, Callback callback, Id& id) {
     if (pending_.size() >= kMaxPending) return false;
+    std::string name(host);
+    std::transform(name.begin(), name.end(), name.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     do {
         id = nextId_++;
     } while (pending_.count(id));
 
     std::vector<uint8_t> query;
-    if (!dns::buildQuery(id, host, query)) return false;
+    if (!dns::buildQuery(id, name, query)) return false;
     if (sendto(fd_.get(), query.data(), query.size(), 0, reinterpret_cast<sockaddr*>(&server_),
                sizeof server_) < 0) {
         return false;
     }
-    std::fprintf(stderr, "resolve %s\n", host.c_str());
+    std::fprintf(stderr, "resolve %s\n", name.c_str());
     auto deadline = Clock::now() + kTimeout;
-    pending_[id] = Request{host, deadline, std::move(callback)};
+    pending_[id] = Request{name, deadline, std::move(callback)};
     deadlines_.emplace_back(deadline, id);
     return true;
 }
@@ -92,7 +98,7 @@ int DnsResolver::processTimeouts() {
         }
         if (deadline > now) {
             auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-            return static_cast<int>(ms) + 1;
+            return static_cast<int>(ms) + kTimerSlackMs;
         }
         deadlines_.pop_front();
         std::fprintf(stderr, "ERROR: resolve %s: timeout\n", it->second.host.c_str());

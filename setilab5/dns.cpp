@@ -68,8 +68,10 @@ static long readName(const uint8_t* p, size_t n, size_t pos, std::string* out) {
         if (l & kCompressionMask) return -1;
         ++pos;
         if (pos + l > n) return -1;
-        if (!name.empty()) name += '.';
-        name.append(reinterpret_cast<const char*>(p + pos), l);
+        if (out) {
+            if (!name.empty()) name += '.';
+            name.append(reinterpret_cast<const char*>(p + pos), l);
+        }
         pos += l;
     }
     if (out) *out = std::move(name);
