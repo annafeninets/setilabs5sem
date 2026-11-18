@@ -13,7 +13,8 @@
 #include "dns.hpp"
 
 namespace {
-constexpr auto kTimeout = std::chrono::seconds(5);
+constexpr auto kAttemptTimeout = std::chrono::seconds(2);
+constexpr int kMaxAttempts = 3;
 constexpr size_t kMaxPending = 60000;
 constexpr size_t kMaxAddrs = 8;
 constexpr size_t kRecvBufSize = 4096;
@@ -22,10 +23,10 @@ constexpr int kRcodeNxDomain = 3;
 constexpr int kTimerSlackMs = 1;
 }
 
-DnsResolver::DnsResolver(Epoll& epoll)
+DnsResolver::DnsResolver(Epoll& epoll, const sockaddr_in& server)
     : fd_(socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)),
       watch_(epoll, *this),
-      server_(dns::systemResolver()),
+      server_(server),
       nextId_(static_cast<Id>(std::random_device{}())) {
     if (!fd_.valid()) throw std::system_error(errno, std::generic_category(), "socket(udp)");
     watch_.set(fd_.get(), EPOLLIN);
@@ -46,15 +47,17 @@ bool DnsResolver::resolve(const std::string& host, Callback callback, Id& id) {
 
     std::vector<uint8_t> query;
     if (!dns::buildQuery(id, name, query)) return false;
-    if (sendto(fd_.get(), query.data(), query.size(), 0, reinterpret_cast<sockaddr*>(&server_),
-               sizeof server_) < 0) {
-        return false;
-    }
+    if (!sendQuery(query)) return false;
     std::fprintf(stderr, "resolve %s\n", name.c_str());
-    auto deadline = Clock::now() + kTimeout;
-    pending_[id] = Request{name, deadline, std::move(callback)};
+    auto deadline = Clock::now() + kAttemptTimeout;
+    pending_[id] = Request{name, deadline, std::move(callback), std::move(query), 1};
     deadlines_.emplace_back(deadline, id);
     return true;
+}
+
+bool DnsResolver::sendQuery(const std::vector<uint8_t>& query) {
+    return sendto(fd_.get(), query.data(), query.size(), 0, reinterpret_cast<const sockaddr*>(&server_),
+                  sizeof server_) >= 0;
 }
 
 void DnsResolver::cancel(Id id) { pending_.erase(id); }
@@ -101,8 +104,17 @@ int DnsResolver::processTimeouts() {
             return static_cast<int>(ms) + kTimerSlackMs;
         }
         deadlines_.pop_front();
-        std::fprintf(stderr, "ERROR: resolve %s: timeout\n", it->second.host.c_str());
-        Callback cb = std::move(it->second.callback);
+        Request& req = it->second;
+        if (req.attempts < kMaxAttempts && sendQuery(req.query)) {
+            ++req.attempts;
+            req.deadline = Clock::now() + kAttemptTimeout;
+            deadlines_.emplace_back(req.deadline, id);
+            std::fprintf(stderr, "resolve %s: no answer, attempt %d of %d\n", req.host.c_str(), req.attempts,
+                         kMaxAttempts);
+            continue;
+        }
+        std::fprintf(stderr, "ERROR: resolve %s: no answer after %d attempts\n", req.host.c_str(), req.attempts);
+        Callback cb = std::move(req.callback);
         pending_.erase(it);
         cb({});
     }

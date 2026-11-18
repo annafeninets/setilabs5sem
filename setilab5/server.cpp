@@ -18,10 +18,10 @@ constexpr int kTimerSlackMs = 1;
 }
 }
 
-Server::Server(uint16_t port)
+Server::Server(uint16_t port, const sockaddr_in& dnsServer)
     : listenFd_(socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)),
       listenWatch_(epoll_, *this),
-      dns_(epoll_) {
+      dns_(epoll_, dnsServer) {
     if (!listenFd_.valid()) fail("socket");
     int one = 1;
     setsockopt(listenFd_.get(), SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);

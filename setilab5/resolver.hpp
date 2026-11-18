@@ -1,38 +1,50 @@
 #pragma once
 
+#include <netinet/in.h>
+
 #include <chrono>
 #include <cstdint>
-#include <memory>
+#include <deque>
+#include <functional>
+#include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "epoll.hpp"
 #include "fd.hpp"
-#include "resolver.hpp"
-#include "session.hpp"
 
-class Server : public EventHandler {
+class DnsResolver : public EventHandler {
 public:
-    explicit Server(uint16_t port);
+    using Callback = std::function<void(std::vector<in_addr>)>;
+    using Id = uint16_t;
 
-    [[noreturn]] void run();
+    DnsResolver(Epoll& epoll, const sockaddr_in& server);
+
+    bool resolve(const std::string& host, Callback callback, Id& id);
+    void cancel(Id id);
+
+    int processTimeouts();
 
     void onEvent(uint32_t events) override;
 
 private:
     using Clock = std::chrono::steady_clock;
 
-    void release(Session* session);
-    void pauseAccept();
-    void resumeAccept();
-    int msUntilAcceptResume() const;
+    struct Request {
+        std::string host;
+        Clock::time_point deadline;
+        Callback callback;
+        std::vector<uint8_t> query;
+        int attempts;
+    };
 
-    Epoll epoll_;
-    FileDescriptor listenFd_;
-    Watch listenWatch_;
-    DnsResolver dns_;
-    std::unordered_map<Session*, std::unique_ptr<Session>> sessions_;
-    std::vector<std::unique_ptr<Session>> graveyard_;
-    bool acceptPaused_ = false;
-    Clock::time_point acceptResumeAt_;
+    bool sendQuery(const std::vector<uint8_t>& query);
+
+    FileDescriptor fd_;
+    Watch watch_;
+    sockaddr_in server_{};
+    Id nextId_;
+    std::unordered_map<Id, Request> pending_;
+    std::deque<std::pair<Clock::time_point, Id>> deadlines_;
 };

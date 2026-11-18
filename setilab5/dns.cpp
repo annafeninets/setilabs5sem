@@ -122,14 +122,33 @@ bool parseResponse(const uint8_t* p, size_t n, Answer& out) {
     return true;
 }
 
+bool parseResolverAddress(const std::string& text, sockaddr_in& out) {
+    std::string ip = text;
+    long port = kDnsPort;
+    size_t colon = text.find(':');
+    if (colon != std::string::npos) {
+        ip = text.substr(0, colon);
+        std::string digits = text.substr(colon + 1);
+        if (digits.empty() || digits.size() > kMaxPortDigits ||
+            digits.find_first_not_of("0123456789") != std::string::npos) {
+            return false;
+        }
+        port = std::strtol(digits.c_str(), nullptr, 10);
+        if (port < kMinPort || port > kMaxPort) return false;
+    }
+    sockaddr_in sa{};
+    sa.sin_family = AF_INET;
+    if (inet_pton(AF_INET, ip.c_str(), &sa.sin_addr) != 1) return false;
+    sa.sin_port = htons(static_cast<uint16_t>(port));
+    out = sa;
+    return true;
+}
+
 sockaddr_in systemResolver() {
     sockaddr_in sa{};
     sa.sin_family = AF_INET;
     sa.sin_port = htons(kDnsPort);
 
-    if (const char* env = std::getenv("SOCKS_DNS")) {
-        if (inet_pton(AF_INET, env, &sa.sin_addr) == 1) return sa;
-    }
     std::ifstream f("/etc/resolv.conf");
     std::string line;
     while (std::getline(f, line)) {

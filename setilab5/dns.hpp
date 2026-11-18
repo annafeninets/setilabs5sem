@@ -34,6 +34,9 @@ namespace dns {
     constexpr int kMaxNameJumps = 16;
 
     constexpr uint16_t kDnsPort = 53;
+    constexpr long kMinPort = 1;
+    constexpr long kMaxPort = 65535;
+    constexpr size_t kMaxPortDigits = 5;
     constexpr const char* kDefaultResolver = "8.8.8.8";
 
     struct Answer {
@@ -46,6 +49,8 @@ namespace dns {
     bool buildQuery(uint16_t id, const std::string& host, std::vector<uint8_t>& out);
 
     bool parseResponse(const uint8_t* p, size_t n, Answer& out);
+
+    bool parseResolverAddress(const std::string& text, sockaddr_in& out);
 
     sockaddr_in systemResolver();
 
