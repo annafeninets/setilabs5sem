@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "buffer.hpp"
+#include "credentials.hpp"
 #include "epoll.hpp"
 #include "fd.hpp"
 #include "resolver.hpp"
@@ -16,7 +17,8 @@ class Session {
 public:
     using ClosedCallback = std::function<void(Session*)>;
 
-    Session(FileDescriptor client, Epoll& epoll, DnsResolver& dns, ClosedCallback onClosed);
+    Session(FileDescriptor client, Epoll& epoll, DnsResolver& dns, const CredentialStore& credentials,
+            ClosedCallback onClosed);
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
 
@@ -26,6 +28,7 @@ public:
 private:
     enum class State {
         Greeting,
+        Auth,
         Request,
         Resolving,
         Connecting,
@@ -71,6 +74,7 @@ private:
     FileDescriptor remote_;
     Epoll& epoll_;
     DnsResolver& dns_;
+    const CredentialStore& credentials_;
     ClosedCallback onClosed_;
     Side clientSide_, remoteSide_;
     Watch clientWatch_, remoteWatch_;

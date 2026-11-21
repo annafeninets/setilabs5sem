@@ -18,10 +18,33 @@ Greeting parseGreeting(const uint8_t* p, size_t size) {
     }
     size_t nmethods = p[1];
     if (size < kGreetingMinSize + nmethods) return g;
-    for (size_t i = 0; i < nmethods; ++i) g.noAuthOffered |= (p[kGreetingMinSize + i] == kAuthNone);
+    for (size_t i = 0; i < nmethods; ++i) {
+        g.noAuthOffered |= (p[kGreetingMinSize + i] == kAuthNone);
+        g.passwordOffered |= (p[kGreetingMinSize + i] == kAuthPassword);
+    }
     g.consumed = kGreetingMinSize + nmethods;
     g.status = Status::Ok;
     return g;
+}
+
+AuthRequest parseAuthRequest(const uint8_t* p, size_t size) {
+    AuthRequest a;
+    if (size < kAuthHeaderSize) return a;
+    if (p[0] != kAuthSubnegVersion) {
+        a.status = Status::Malformed;
+        return a;
+    }
+    size_t userLen = p[kAuthUserLenOffset];
+    size_t passLenOffset = kAuthHeaderSize + userLen;
+    if (size < passLenOffset + kAuthPassLenSize) return a;
+    size_t passLen = p[passLenOffset];
+    size_t total = passLenOffset + kAuthPassLenSize + passLen;
+    if (size < total) return a;
+    a.username.assign(reinterpret_cast<const char*>(p + kAuthHeaderSize), userLen);
+    a.password.assign(reinterpret_cast<const char*>(p + passLenOffset + kAuthPassLenSize), passLen);
+    a.consumed = total;
+    a.status = Status::Ok;
+    return a;
 }
 
 Request parseRequest(const uint8_t* p, size_t size) {
@@ -75,6 +98,10 @@ Request parseRequest(const uint8_t* p, size_t size) {
 
 std::array<uint8_t, kMethodReplySize> makeMethodReply(uint8_t method) {
     return {kVersion, method};
+}
+
+std::array<uint8_t, kAuthReplySize> makeAuthReply(bool success) {
+    return {kAuthSubnegVersion, success ? kAuthStatusSuccess : kAuthStatusFailure};
 }
 
 std::array<uint8_t, kReplySize> makeReply(uint8_t code, const sockaddr_in* bound) {

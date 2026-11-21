@@ -12,7 +12,12 @@ namespace socks5 {
 constexpr uint8_t kVersion = 0x05;
 
 constexpr uint8_t kAuthNone = 0x00;
+constexpr uint8_t kAuthPassword = 0x02;
 constexpr uint8_t kAuthNoAcceptable = 0xFF;
+
+constexpr uint8_t kAuthSubnegVersion = 0x01;
+constexpr uint8_t kAuthStatusSuccess = 0x00;
+constexpr uint8_t kAuthStatusFailure = 0x01;
 
 constexpr uint8_t kCmdConnect = 0x01;
 
@@ -45,6 +50,10 @@ constexpr size_t kMethodReplySize = 2;
 constexpr size_t kReplySize = 10;
 constexpr size_t kReplyAddrOffset = 4;
 constexpr size_t kReplyPortOffset = 8;
+constexpr size_t kAuthHeaderSize = 2;
+constexpr size_t kAuthUserLenOffset = 1;
+constexpr size_t kAuthPassLenSize = 1;
+constexpr size_t kAuthReplySize = 2;
 
 enum class Status {
     NeedMore,
@@ -56,6 +65,7 @@ enum class Status {
 struct Greeting {
     Status status = Status::NeedMore;
     bool noAuthOffered = false;
+    bool passwordOffered = false;
     size_t consumed = 0;
 };
 
@@ -69,10 +79,19 @@ struct Request {
     uint16_t port = 0;
 };
 
+struct AuthRequest {
+    Status status = Status::NeedMore;
+    size_t consumed = 0;
+    std::string username;
+    std::string password;
+};
+
 Greeting parseGreeting(const uint8_t* data, size_t size);
+AuthRequest parseAuthRequest(const uint8_t* data, size_t size);
 Request parseRequest(const uint8_t* data, size_t size);
 
 std::array<uint8_t, kMethodReplySize> makeMethodReply(uint8_t method);
+std::array<uint8_t, kAuthReplySize> makeAuthReply(bool success);
 std::array<uint8_t, kReplySize> makeReply(uint8_t code, const sockaddr_in* bound = nullptr);
 
 uint8_t replyForErrno(int err);

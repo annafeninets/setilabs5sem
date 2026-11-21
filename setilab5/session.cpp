@@ -4,6 +4,7 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 
+#include <cctype>
 #include <cerrno>
 #include <cstdarg>
 #include <cstdio>
@@ -15,16 +16,26 @@ namespace {
 constexpr size_t kBufSize = 64 * 1024;
 constexpr size_t kLogBufSize = 512;
 
+std::string printable(const std::string& text) {
+    std::string out(text);
+    for (char& ch : out) {
+        if (!std::isprint(static_cast<unsigned char>(ch))) ch = '?';
+    }
+    return out;
+}
+
 void setNoDelay(int fd) {
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
 }
 }
 
-Session::Session(FileDescriptor client, Epoll& epoll, DnsResolver& dns, ClosedCallback onClosed)
+Session::Session(FileDescriptor client, Epoll& epoll, DnsResolver& dns, const CredentialStore& credentials,
+                 ClosedCallback onClosed)
     : client_(std::move(client)),
       epoll_(epoll),
       dns_(dns),
+      credentials_(credentials),
       onClosed_(std::move(onClosed)),
       clientSide_(*this, true),
       remoteSide_(*this, false),
@@ -75,7 +86,6 @@ void Session::fail(uint8_t replyCode, const std::string& reason) {
     if (dnsPending_) dns_.cancel(dnsId_);
     dnsPending_ = false;
     c2r_.clear();
-    r2c_.clear();
     auto msg = socks5::makeReply(replyCode);
     r2c_.append(msg.data(), msg.size());
     state_ = State::Failing;
@@ -118,7 +128,7 @@ void Session::readClient() {
     ssize_t r = recv(client_.get(), p, n, 0);
     if (r > 0) {
         c2r_.commit(static_cast<size_t>(r));
-        if (state_ == State::Greeting || state_ == State::Request) parseHandshake();
+        if (state_ == State::Greeting || state_ == State::Auth || state_ == State::Request) parseHandshake();
     } else if (r == 0) {
         clientEof_ = true;
         if (state_ != State::Relay) {
@@ -155,8 +165,13 @@ void Session::parseHandshake() {
             return close();
         }
         c2r_.consume(g.consumed);
-        if (!g.noAuthOffered) {
-            log("ERROR: client offers no acceptable authentication method (only no-auth is supported)");
+        bool authRequired = !credentials_.empty();
+        uint8_t method = socks5::kAuthNoAcceptable;
+        if (authRequired && g.passwordOffered) method = socks5::kAuthPassword;
+        if (!authRequired && g.noAuthOffered) method = socks5::kAuthNone;
+        if (method == socks5::kAuthNoAcceptable) {
+            log(authRequired ? "ERROR: client does not offer username/password authentication"
+                             : "ERROR: client does not offer the no-authentication method");
             c2r_.clear();
             r2c_.clear();
             auto msg = socks5::makeMethodReply(socks5::kAuthNoAcceptable);
@@ -164,7 +179,29 @@ void Session::parseHandshake() {
             state_ = State::Failing;
             return;
         }
-        auto msg = socks5::makeMethodReply(socks5::kAuthNone);
+        auto msg = socks5::makeMethodReply(method);
+        r2c_.append(msg.data(), msg.size());
+        state_ = method == socks5::kAuthPassword ? State::Auth : State::Request;
+    }
+
+    if (state_ == State::Auth) {
+        auto a = socks5::parseAuthRequest(c2r_.readPtr(), c2r_.size());
+        if (a.status == socks5::Status::NeedMore) return;
+        if (a.status == socks5::Status::Malformed) {
+            log("ERROR: protocol violation in authentication request");
+            return close();
+        }
+        c2r_.consume(a.consumed);
+        bool ok = credentials_.verify(a.username, a.password);
+        auto msg = socks5::makeAuthReply(ok);
+        if (!ok) {
+            log("ERROR: authentication failed for user '%s'", printable(a.username).c_str());
+            c2r_.clear();
+            r2c_.append(msg.data(), msg.size());
+            state_ = State::Failing;
+            return;
+        }
+        log("authenticated as '%s'", printable(a.username).c_str());
         r2c_.append(msg.data(), msg.size());
         state_ = State::Request;
     }
@@ -312,6 +349,7 @@ void Session::updateInterest() {
         case State::Failing:
             break;
         case State::Greeting:
+        case State::Auth:
         case State::Request:
         case State::Resolving:
             if (!clientEof_ && c2r_.space() > 0) cm |= EPOLLIN;

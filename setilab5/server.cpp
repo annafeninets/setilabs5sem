@@ -18,10 +18,11 @@ constexpr int kTimerSlackMs = 1;
 }
 }
 
-Server::Server(uint16_t port, const sockaddr_in& dnsServer)
+Server::Server(uint16_t port, const sockaddr_in& dnsServer, CredentialStore credentials)
     : listenFd_(socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0)),
       listenWatch_(epoll_, *this),
-      dns_(epoll_, dnsServer) {
+      dns_(epoll_, dnsServer),
+      credentials_(std::move(credentials)) {
     if (!listenFd_.valid()) fail("socket");
     int one = 1;
     setsockopt(listenFd_.get(), SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
@@ -33,6 +34,11 @@ Server::Server(uint16_t port, const sockaddr_in& dnsServer)
     if (listen(listenFd_.get(), SOMAXCONN) < 0) fail("listen");
     listenWatch_.set(listenFd_.get(), EPOLLIN);
     std::fprintf(stderr, "SOCKS5 proxy listening on port %u\n", port);
+    if (credentials_.empty()) {
+        std::fprintf(stderr, "authentication: none\n");
+    } else {
+        std::fprintf(stderr, "authentication: username/password (%zu users)\n", credentials_.size());
+    }
 }
 
 void Server::run() {
@@ -58,7 +64,7 @@ void Server::onEvent(uint32_t) {
             pauseAccept();
             return;
         }
-        auto session = std::make_unique<Session>(FileDescriptor(fd), epoll_, dns_,
+        auto session = std::make_unique<Session>(FileDescriptor(fd), epoll_, dns_, credentials_,
                                                  [this](Session* s) { release(s); });
         Session* raw = session.get();
         sessions_.emplace(raw, std::move(session));

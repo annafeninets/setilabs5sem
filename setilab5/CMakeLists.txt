@@ -12,5 +12,13 @@ add_executable(socks5_proxy main.cpp server.cpp session.cpp resolver.cpp epoll.c
         session.hpp
         buffer.hpp
         resolver.hpp
-        server.hpp)
-target_compile_options(socks5_proxy PRIVATE -Wall -Wextra -O2)
+        server.hpp
+        credentials.cpp
+        credentials.hpp
+)
+
+if(MSVC)
+    target_compile_options(socks5_proxy PRIVATE /W4)
+else()
+    target_compile_options(socks5_proxy PRIVATE -Wall -Wextra -O2)
+endif()
